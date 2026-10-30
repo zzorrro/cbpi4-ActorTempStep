@@ -1,0 +1,6 @@
+name: ActorTempStep
+version: 1.0.0
+description: Step that controls an actor based on temperature with optional delay
+author: Sammy
+homepage: https://github.com/zzorrro/cbpi4-ActorTempStep
+license: MIT
