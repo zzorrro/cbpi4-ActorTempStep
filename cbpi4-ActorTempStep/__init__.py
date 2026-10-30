@@ -51,7 +51,7 @@ class ActorTempStep(CBPiStep):
 
     async def on_delay_timer_update(self, timer, seconds):
         if self.delay_minutes > 0:
-            self.summary = f"Delay: {Timer.format_time(seconds)}"
+            self.summary = Timer.format_time(seconds)
             await self.push_update()
 
     async def on_delay_timer_done(self, timer):
