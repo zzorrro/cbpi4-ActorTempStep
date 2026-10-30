@@ -10,17 +10,18 @@ logger = logging.getLogger(__name__)
 
 @parameters([
     Property.Kettle(label="Kettle", description="Boiling kettle"),
-    Property.Sensor(label="Sensor", description="Sensor to monitor."),
+    Property.Sensor(label="Sensor", description="Sensor to monitor. NOTE: If AutoMode=Yes, this MUST be the Kettle's sensor."),
     Property.Select(label="AutoMode", options=["Yes", "No"], description="Enable Kettle's PID/hysteresis at step start"),
-    Property.Number(label="Temp", description="Target temperature (°C). Decimals supported.", configurable=True),
+    Property.Number(label="Temp", description="Target temperature (°C). Decimals supported (e.g. 76.2)", configurable=True),
     Property.Number(label="Delay", description="Delay in minutes before executing action (0 = no delay)", configurable=True),
     Property.Actor(label="Actor", description="Actor to control when target temp is reached"),
-    Property.Select(label="Action", options=["Turn ON", "Turn OFF"], description="Action to perform")
+    Property.Select(label="Action", options=["Turn ON", "Turn OFF"], description="Action to perform when target temp is reached")
 ])
 class ActorTempStep(CBPiStep):
 
     async def on_start(self):
         self.port = str(self.cbpi.static_config.get('port', 8000))
+        
         self.kettle = self.get_kettle(self.props.Kettle)
         self.sensor = self.props.Sensor
         self.AutoMode = True if self.props.get("AutoMode", "No") == "Yes" else False
@@ -29,92 +30,113 @@ class ActorTempStep(CBPiStep):
         
         self.delay_minutes = int(self.props.get("Delay", 0))
         self.delay_seconds = self.delay_minutes * 60
+        
         self.temp_reached = False
+        self.step_completed_normally = False
         
         if self.kettle is not None:
             self.kettle.target_temp = float(self.props.get("Temp", 0.0))
             
-        if self.AutoMode == True:
-            await self.setAutoMode(True)
-            
-        # Инициализируем таймер ТОЛЬКО если есть задержка
         if self.delay_seconds > 0:
             self.delay_timer = Timer(self.delay_seconds, on_update=self.on_delay_timer_update, on_done=self.on_delay_timer_done)
         else:
             self.delay_timer = None
             
-        self.summary = f"Waiting for {self.kettle.target_temp:.1f}°C..." if self.kettle is not None else "Waiting..."
+        if self.AutoMode == True:
+            await self.setAutoMode(True)
+            logger.info("AutoMode activated at step start")
+            
+        self.summary = f"Waiting for {self.kettle.target_temp:.1f}°C..." if self.kettle is not None else f"Waiting for {float(self.props.get('Temp', 0.0)):.1f}°C..."
         await self.push_update()
 
-    # Коллбэк обновления (работает автоматически)
     async def on_delay_timer_update(self, timer, seconds):
-        self.summary = f"Delay: {Timer.format_time(seconds)}"
-        await self.push_update()
+        if self.delay_minutes > 0:
+            self.summary = f"Delay: {Timer.format_time(seconds)}"
+            await self.push_update()
 
-    # Коллбэк завершения (работает автоматически, когда время вышло)
     async def on_delay_timer_done(self, timer):
         await self.execute_action()
 
     async def execute_action(self):
+        # 1. Управление актором (ПРЯМОЕ, без ложной проверки состояния строки)
         if self.actor is not None:
-            current_state = getattr(self.actor, 'state', False)
-            if self.action_type == "Turn ON" and not current_state:
+            if self.action_type == "Turn ON":
                 await self.actor_on(self.actor)
-                logger.info(f"Actor {self.actor} turned ON")
-            elif self.action_type == "Turn OFF" and current_state:
+                logger.info(f"Actor {self.actor} turned ON at {self.kettle.target_temp:.1f}°C")
+            else:
                 await self.actor_off(self.actor)
-                logger.info(f"Actor {self.actor} turned OFF")
+                logger.info(f"Actor {self.actor} turned OFF at {self.kettle.target_temp:.1f}°C")
         
+        # 2. Уведомление
         action_text = "turned ON" if self.action_type == "Turn ON" else "turned OFF"
         delay_text = f" after {self.delay_minutes} min delay" if self.delay_minutes > 0 else ""
         
-        self.cbpi.notify(self.name, f'Target temp {self.kettle.target_temp:.1f}°C reached{delay_text}. Actor {action_text}.', NotificationType.SUCCESS)
+        self.cbpi.notify(
+            self.name, 
+            f'Target temp {self.kettle.target_temp:.1f}°C reached{delay_text}. Actor {action_text}.', 
+            NotificationType.SUCCESS
+        )
         
+        self.summary = "Action completed, moving to next step..."
+        await self.push_update()
+        
+        # 3. Флаг нормального завершения (КРИТИЧЕСКИ ВАЖНО: защищает актор от выключения в on_stop)
+        self.step_completed_normally = True
+        
+        # 4. Автоматическое выключение AutoMode для безопасности
         if self.AutoMode == True:
             await self.setAutoMode(False)
-            
-        self.summary = "Action completed."
-        await self.push_update()
+            logger.info("AutoMode turned OFF at step completion (safety)")
+        
         await asyncio.sleep(1)
-        await self.next() # Переход к следующему шагу
+        await self.next()
 
     async def run(self):
         while self.running == True:
             await asyncio.sleep(1)
-            sensor_data = self.get_sensor_value(self.sensor)
             
+            sensor_data = self.get_sensor_value(self.sensor)
             if sensor_data and "value" in sensor_data:
                 current_temp = float(sensor_data.get("value"))
                 
-                # Ждем температуру И проверяем, что таймер еще не запущен
                 if current_temp >= self.kettle.target_temp and not self.temp_reached:
                     self.temp_reached = True
                     
                     if self.delay_timer is not None:
                         self.summary = f"Target reached. Starting {self.delay_minutes} min delay..."
                         await self.push_update()
-                        # Запускаем таймер и доверяем ему вызвать on_delay_timer_done
-                        self.delay_timer.start()
-                    else:
-                        # Если задержки нет, вызываем действие сразу
-                        await self.execute_action()
-                        return StepResult.DONE # Прерываем run, так как действие уже вызвало self.next()
+                        logger.info(f"Target temp reached. Starting {self.delay_minutes} min delay.")
                         
+                        self.delay_timer.start()
+                        self.delay_timer.is_running = True
+                    else:
+                        logger.info("Target temp reached. Executing action immediately.")
+                        await self.execute_action()
+                        return StepResult.DONE
+                    
             await self.push_update()
+
         return StepResult.DONE
 
     async def on_stop(self):
+        # Добавлен лог, чтобы точно видеть, почему вызывается on_stop
+        logger.info(f"on_stop вызван. step_completed_normally = {self.step_completed_normally}")
         self.summary = ""
+        
         if self.delay_timer is not None:
-            await self.delay_timer.stop() # Останавливаем таймер при ручной остановке
+            await self.delay_timer.stop()
             
         if self.kettle is not None:
             self.kettle.target_temp = 0
         if self.AutoMode == True:
             await self.setAutoMode(False)
             
-        if self.actor is not None:
+        # Выключаем актор ТОЛЬКО если шаг не завершился нормально (то есть нажали STOP)
+        if self.actor is not None and not self.step_completed_normally:
             await self.actor_off(self.actor)
+            logger.info("Actor forced OFF due to manual step stop")
+        elif self.step_completed_normally:
+            logger.info("Step completed normally. Actor state PRESERVED.")
             
         logger.info("Step stopped manually. All equipment halted.")
         await self.push_update()
@@ -131,6 +153,7 @@ class ActorTempStep(CBPiStep):
                 await self.push_update()
         except Exception as e:
             logging.error("Failed to switch KettleLogic {} {}".format(self.kettle.id, e))
+
 
 def setup(cbpi):
     cbpi.plugin.register("ActorTempStep", ActorTempStep)
