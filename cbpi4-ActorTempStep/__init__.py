@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 
 @parameters([
     Property.Kettle(label="Kettle", description="Boiling kettle"),
-    Property.Sensor(label="Sensor", description="Temperature sensor to monitor"),
-    Property.Select(label="AutoMode", options=["Yes", "No"], description="Enable automatic heating control (PID/hysteresis) -> Yes"),
-    Property.Number(label="Temp", description="Target temperature to trigger the actor (°C)", configurable=True),
+    Property.Sensor(label="Sensor", description="Sensor to monitor. NOTE: If AutoMode=Yes, this MUST be the Kettle's sensor. If using an external sensor, set AutoMode=No."),
+    Property.Select(label="AutoMode", options=["Yes", "No"], description="Enable Kettle's PID/hysteresis (uses Kettle's internal sensor). Set to No when using an external sensor."),
+    Property.Number(label="Temp", description="Target temperature (°C) for the selected Sensor. Also sets Kettle target if AutoMode=Yes.", configurable=True),
     Property.Number(label="Delay", description="Delay in minutes before executing action (0 = no delay)", configurable=True),
     Property.Actor(label="Actor", description="Actor to control when target temp is reached"),
     Property.Select(label="Action", options=["Turn ON", "Turn OFF"], description="Action to perform when target temp is reached"),
