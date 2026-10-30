@@ -1,0 +1,4 @@
+include README.md
+include config.yaml
+include LICENSE
+recursive-include cbpi4-ActorTempStep *
