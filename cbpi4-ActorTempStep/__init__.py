@@ -58,10 +58,9 @@ class ActorTempStep(CBPiStep):
         await self.execute_action()
 
     async def execute_action(self):
-        # Управление актором
+        # 1. Управление актором
         if self.actor is not None:
             current_state = getattr(self.actor, 'state', False)
-            
             if self.action_type == "Turn ON":
                 if not current_state:
                     await self.actor_on(self.actor)
@@ -75,7 +74,7 @@ class ActorTempStep(CBPiStep):
                 else:
                     logger.info(f"Actor {self.actor} is already OFF, state unchanged.")
         
-        # Уведомление
+        # 2. Уведомление
         action_text = "turned ON" if self.action_type == "Turn ON" else "turned OFF"
         delay_text = f" after {self.delay_minutes} min delay" if self.delay_minutes > 0 else ""
         
@@ -88,11 +87,10 @@ class ActorTempStep(CBPiStep):
         self.summary = "Action completed, moving to next step..."
         await self.push_update()
         
+        # 3. Флаг нормального завершения (чтобы on_stop не выключил актор)
         self.step_completed_normally = True
         
-        # ВАЖНО: При нормальном завершении шага АВТОМАТИЧЕСКИ выключаем AutoMode
-        # Если следующий шаг нужен нагрев — он сам включит AutoMode: Yes
-        # Это обеспечивает безопасность: если рецепта больше нет, нагрев не останется включённым
+        # 4. Автоматическое выключение AutoMode для безопасности
         if self.AutoMode == True:
             await self.setAutoMode(False)
             logger.info("AutoMode turned OFF at step completion (safety)")
@@ -128,8 +126,10 @@ class ActorTempStep(CBPiStep):
         return StepResult.DONE
 
     async def on_stop(self):
+        # Очищаем экран от старых сообщений при ручной остановке
         self.summary = ""
         
+        # Останавливаем таймер, если он тикает
         if self.delay_timer is not None:
             await self.delay_timer.stop()
             
@@ -138,12 +138,12 @@ class ActorTempStep(CBPiStep):
         if self.AutoMode == True:
             await self.setAutoMode(False)
             
-        # При ручной остановке (STOP) выключаем ВСЁ для безопасности
+        # Выключаем актор ТОЛЬКО если шаг не завершился нормально (то есть нажали STOP)
         if self.actor is not None and not self.step_completed_normally:
             await self.actor_off(self.actor)
             logger.info("Actor forced OFF due to manual step stop")
             
-        logger.info("Step stopped. All equipment halted.")
+        logger.info("Step stopped manually. All equipment halted.")
         await self.push_update()
 
     async def setAutoMode(self, auto_state):
